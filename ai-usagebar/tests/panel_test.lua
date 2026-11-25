@@ -1694,7 +1694,12 @@ end
 assert(diagnosticsHeader, "overview header must include a compact diagnostics action")
 assert(has(labels(host.tree()), "Codex · Work") and has(labels(host.tree()), "Codex · Personal"),
     "the overview must identify accounts with identical provider glyphs")
-assert(#collect(host.tree(), "progress") == 3, "both quotas and the elapsed window must be visible")
+local quotaRows = 0
+for _, row in ipairs(collect(host.tree(), "row")) do
+    if row.props.key == "session" or row.props.key == "weekly" then quotaRows = quotaRows + 1 end
+end
+assert(quotaRows == 2 and #collect(host.tree(), "progress") == 1,
+    "a windowed account draws the 5h and 7d pills; an account without windows keeps its reading")
 assert(has(labels(host.tree()), "42%") and has(labels(host.tree()), "72%"),
     "overview percentages must remain visible when reset timestamps are absent")
 for _, card in ipairs(collect(host.tree(), "column")) do
@@ -1800,8 +1805,9 @@ entry.metrics[5].model_pool = true
 entry.sections = entry.metrics
 local _, _, runtime, _, _, _, host = loadPanel({ entries = { entry, { id = "deeprelay", status = "ready", metrics = {} } } }, nil, { usage_display = "remaining" })
 runtime.onOpen()
-assert(#collect(host.tree(), "progress") == 3 and has(labels(host.tree()), "ui.more_windows"),
-    "overview must bound window previews and disclose omitted windows")
+assert(#collect(host.tree(), "progress") == 2 and has(labels(host.tree()), "Window 2")
+    and not has(labels(host.tree()), "Window 3"),
+    "a compact card without quota windows shows its first two readings")
 assert(has(labels(host.tree()), "58%") and entry.metrics[1].percent == 42,
     "overview remaining mode must transform only the presentation")
 assert(host.tree().props.height <= 640, "large overviews must stay inside the declared maximum")
@@ -1818,7 +1824,7 @@ host.publishState("error", { code = "timed_out", detail = "" })
 assert(has(labels(host.tree()), "ui.stale_hint"), "a whole-report failure must mark overview readings as old")
 end
 
--- Large overviews bound native work without losing access to any account.
+-- Every account is on one scrolling list, with no pages.
 do
 local report = { entries = {} }
 for index = 1, 14 do report.entries[index] = provider("openai@" .. index, "Codex · " .. index, index) end
@@ -1828,14 +1834,13 @@ local shown = 0
 for _, column in ipairs(collect(host.tree(), "column")) do
     if tostring(column.props.key):match("^overview%-openai@") then shown = shown + 1 end
 end
-assert(shown > 0 and shown <= 4, "a page must bound native rendering work to four account cards")
-local previous
+assert(shown == 14, "the overview must list every account on one page")
+assert(#collect(host.tree(), "scroll") == 1, "the account list scrolls instead of paging")
 for _, button in ipairs(collect(host.tree(), "button")) do
-    if button.props.tooltip == "ui.previous_page" then previous = button end
+    assert(button.props.tooltip ~= "ui.previous_page" and button.props.tooltip ~= "ui.next_page",
+        "the overview has no page buttons")
 end
-assert(previous and previous.props.enabled, "the last page must expose navigation to earlier accounts")
-previous.props.onClick()
-assert(host.tree().props.key == "overview", "page navigation must preserve the overview")
+assert(host.tree().props.height <= 608, "a long list must stay inside the panel's maximum height")
 end
 
 -- A contextless bar open may reach the host as an empty string.
@@ -1867,35 +1872,14 @@ runtime.onOpen("overview")
 assert(host.tree().props.key == "overview", "explicit overview must remain available")
 end
 
--- Opening from the bar highlights the selected account inside the All accounts overview;
--- Antigravity shows all windows (including weekly and model pools) without truncation.
+-- Opening from the bar starts in the overview with the account selected.
 do
-local agyMetrics = {
-    { type = "metric", label = "Gemini", percent = 9, value = "9%", window_secs = 18000, reset_at = "2026-10-16T20:00:00Z" },
-    { type = "metric", label = "Claude & GPT OSS", percent = 95, value = "95%", window_secs = 18000, reset_at = "2026-10-16T21:00:00Z" },
-    { type = "metric", label = "Gemini", percent = 2, value = "2%", window_secs = 604800, reset_at = "2026-10-20T18:00:00Z" },
-    { type = "metric", label = "Gemini 4 Argon", percent = 6, value = "6%", window_secs = 604800, model_pool = true },
-    { type = "metric", label = "Claude & GPT OSS", percent = 31, value = "31%", window_secs = 604800 },
-}
-local agy = { id = "antigravity", display_name = "Antigravity", status = "ready",
-    metrics = agyMetrics, sections = agyMetrics }
-local report = { entries = { provider("openai@work", "Codex · Work", 42), agy } }
+local report = { entries = { provider("openai@work", "Codex · Work", 42), provider("antigravity", "Antigravity", 9) } }
 local _, _, runtime, _, _, _, host = loadPanel(report)
 host.values.selected = "openai@work"
 runtime.onOpen()
 assert(host.tree().props.key == "overview" and host.values.selected == "openai@work",
-    "opening from the bar must start in the All accounts overview with the account selected")
-assert(has(labels(host.tree()), "Gemini")
-    and has(labels(host.tree()), "Claude & GPT OSS")
-    and has(labels(host.tree()), "Gemini 4 Argon · Weekly")
-    and has(labels(host.tree()), "Session")
-    and has(labels(host.tree()), "Weekly")
-    and has(labels(host.tree()), "4h 0m")
-    and has(labels(host.tree()), "5h 0m")
-    and has(labels(host.tree()), "4d 2h")
-    and #collect(host.tree(), "progress") == 9
-    and not has(labels(host.tree()), "ui.more_windows"),
-    "Antigravity overview card must group model families and show all reported windows, model pools, elapsed tracks, and reset times")
+    "opening from the bar must start in the overview with the account selected")
 end
 
 -- A local AGY RPC rejection does not establish that the AGY login is expired.
@@ -1993,6 +1977,98 @@ assert(identityRow and has(labels(identityRow), "Antigravity") and not has(label
     "identity row must show the provider and plan without the account label")
 assert(detailTree.props.height >= 320 and detailTree.props.height <= 345,
     "detail height must fit two windowed metrics without dead space or clipping")
+end
+
+-- Claude profiles: active first, then accounts with usage left, each group by
+-- soonest weekly reset; the bare login is hidden and only Claude can be switched to.
+do
+local function claudeProfile(label, session, weekly, resetHours, extraUsage)
+    local metrics = {
+        { type = "metric", label = "Weekly (7d)", percent = weekly, value = weekly .. "%", window_secs = 604800,
+          reset_at = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() + resetHours * 3600) },
+        { type = "metric", label = "Fable (7d)", percent = 100, value = "100%", window_secs = 604800 },
+    }
+    if session ~= nil then
+        table.insert(metrics, 1, { type = "metric", label = "Session (5h)", percent = session,
+            value = session .. "%", window_secs = 18000 })
+    end
+    local sections = { table.unpack(metrics) }
+    if label == "soon" then
+        sections[#sections + 1] = { type = "block", label = "Reset credits", body = {
+            "Free limit reset · expires Dec 15 22:59 (21d 0h)",
+            "Fable reset",
+        } }
+    end
+    if extraUsage ~= nil then
+        metrics[#metrics + 1] = { type = "metric", label = "Extra usage", percent = extraUsage,
+            value = "$" .. extraUsage .. " of $100.00" }
+    end
+    return { id = "anthropic@" .. label, display_name = "Claude · " .. label, status = "ready",
+        metrics = metrics, sections = sections }
+end
+local report = { entries = {
+    claudeProfile("full", 100, 40, 1, 100),
+    claudeProfile("capped", 10, 100, 50),
+    claudeProfile("paid", 100, 30, 70, 40),
+    claudeProfile("late", 10, 20, 90),
+    claudeProfile("soon", nil, 30, 5),
+    claudeProfile("current", 50, 60, 100),
+    { id = "anthropic", display_name = "Claude", status = "ready", metrics = {}, sections = {} },
+    provider("openai@work", "Codex · Work", 10),
+} }
+local _, _, runtime, _, _, _, host = loadPanel(report)
+host.publishState("active_account", "current")
+runtime.onOpen()
+local order = {}
+for _, column in ipairs(collect(host.tree(), "column")) do
+    local id = tostring(column.props.key):match("^overview%-(.+)$")
+    if id ~= nil then order[#order + 1] = id end
+end
+assert(table.concat(order, ",") == "anthropic@current,anthropic@soon,anthropic@late,openai@work,anthropic@full,anthropic@capped,anthropic@paid",
+    "profiles must sort active, then usable by weekly reset, then the rest; got " .. table.concat(order, ","))
+local switches = {}
+for _, button in ipairs(collect(host.tree(), "button")) do
+    if tostring(button.props.key):match("^switch%-") then switches[#switches + 1] = button end
+end
+assert(#switches == 5, "every inactive Claude profile, and nothing else, gets a switch button")
+for _, button in ipairs(switches) do
+    local key = button.props.key
+    local limited = key == "switch-full" or key == "switch-capped"
+    assert(button.props.enabled == not limited,
+        "profiles at their 5h or weekly limit disable the switch unless extra usage is left: " .. key)
+    local tooltip = limited and "ui.switch_limited" or key == "switch-paid" and "ui.switch_extra_usage"
+        or "ui.switch_tooltip"
+    assert(button.props.tooltip == tooltip, "the switch tooltip names why it is limited: " .. key)
+    assert((button.props.glyph == "coin") == (key == "switch-paid"),
+        "only a switch onto extra usage carries the coin marker: " .. key)
+end
+assert(has(labels(host.tree()), "ui.active"), "the active profile is marked instead of switchable")
+assert(has(labels(host.tree()), "∞"), "a profile without a 5h window shows the no-limit pill")
+local function overviewCard(id)
+    for _, column in ipairs(collect(host.tree(), "column")) do
+        if column.props.key == "overview-" .. id then return column end
+    end
+end
+local soonCard = labels(overviewCard("anthropic@soon"))
+assert(has(soonCard, "Free limit reset") and has(soonCard, "21d 0h") and has(soonCard, "Fable reset"),
+    "each reset credit is listed on the card with its time left")
+assert(not has(labels(overviewCard("anthropic@late")), "Fable reset"), "a card lists only its own credits")
+switches[1].props.onClick()
+assert(type(host.values.command) == "table" and host.values.command.action == "switch"
+    and host.values.command.label == "soon", "a switch button asks the service to switch at once")
+host.publishState("switching", "soon")
+for _, button in ipairs(collect(host.tree(), "button")) do
+    if tostring(button.props.key):match("^switch%-") then
+        assert(button.props.enabled == false, "switch buttons wait for the running switch")
+        if button.props.key == "switch-soon" then
+            assert(button.props.text == "ui.switching", "the running switch is labelled")
+        end
+    end
+end
+host.publishState("switching", nil)
+host.publishState("switch_error", { label = "soon", detail = "not logged in" })
+assert(has(labels(host.tree()), "ui.switch_failed: not logged in"),
+    "a failed switch is reported on its profile's card")
 end
 
 io.write("ok: panel degrades safely, sorts usage, and removes unavailable providers\n")

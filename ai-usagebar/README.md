@@ -7,9 +7,15 @@ a Rust CLI that reads Claude, Codex, GitHub Copilot, Cursor, Antigravity, Kiro,
 Z.AI, Nous Research, OpenCode Go, Command Code, OpenRouter, DeepSeek, Kimi and Grok, among
 others. The selector also includes DeepInfra, Grok Bot, Ollama Cloud, OrcaRouter,
 Model Studio, Lyceum, Devin, Cline, Muse Code, Synthetic, Droid, DeepRelay and Mistral. The plugin runs
-`ai-usagebar usage --json` and displays the report.
-Diagnostics reads the provider catalog with `ai-usagebar vendors --json` on demand.
-It does not call provider APIs or read credential files.
+`ai-usagebar usage --json` and `ai-usagebar account status --json` and displays
+the report and the active Claude account. Diagnostics reads the provider catalog
+with `ai-usagebar vendors --json` on demand, and a switch button runs
+`ai-usagebar account switch <label> --cli`. The plugin does not call provider
+APIs or read credential files.
+
+The account commands need an `ai-usagebar` build that has the `account`
+subcommand. With an older CLI the bar falls back to the default Claude login and
+the switch buttons report a failure.
 
 ## Plugin
 
@@ -51,90 +57,68 @@ The plugin requires plugin API 43 for the current Noctalia palette roles,
 container tooltips and shared modules.
 It will not install on an older shell. Plugin version 1.1.0 remains available for API 9.
 
-The main readings and provider icons follow the shell's typography and bar scale.
-Text also follows the configured font family, weight and font scale. Countdown and
-pace remain smaller secondary readings. Provider and model marks use a consistent
-16px glyph in an 18px slot. On the bar, the reset clock and countdown appear only
-when a window is near 100% (`>= 90%`) or at its limit, keeping normal usage compact.
+Text follows the shell's typography and the configured font family, weight and
+font scale. Provider marks use a 16px glyph in an 18px slot.
 
 ## Usage
 
 Add `felipeartur/ai-usagebar:bar` to a bar in Settings, Bar. The capsule shows
-one provider's headline reading beside its icon. Readings use the bar's text
-color, the theme's `secondary` color for high usage, and `error` for critical
-usage. Icons keep their normal color unless a read fails.
+the active Claude account: the account named by `ai-usagebar account status`, or
+the default `anthropic` login when no named account matches. It draws two pills
+side by side, the 5-hour session and the overall weekly quota (`Weekly (7d)`,
+not a model pool such as `Fable (7d)`), each followed by its percentage.
 
-A provider that reports a balance instead of a quota (DeepSeek, Kilo, Novita,
-Moonshot, and Nous top-up credits) has no percentage to draw: the capsule prints
-that balance where a quota vendor prints its percentage. When the CLI selects a
-monetary value as the headline, the capsule keeps that amount even if a supporting
-percentage is available. Used/remaining changes quota readings, not money.
-
-`Automatic` selects by headline severity, then usage. Raise `provider_limit` to
-show more providers; limits above one also show `+N` for providers that do not
-fit. Pin a provider or add another widget instance to keep particular plans
-visible.
-
-Named accounts use the label from the CLI config. Pick the provider and put the
-label in `account`: `vendor = "openai"` with `account = "work"` follows the
-`openai@work` report entry. Leave it empty for the provider's default account.
-
-Settings use the same names as the core `sysmon` widget. Set `visualization` to
-`gauge` for short-window usage above a thinner long-window usage bar, or
-`none` to hide the bars. A provider with one available window shows one bar. `show_value`,
-`show_glyph` and `glyph_position` control the percentage and icon placement,
-including Antigravity's individual model readings. A divider separates providers
-and models. Enable `show_name` to distinguish shared model groups. Names remain
-bounded so they do not take over the bar.
-
-`extras` adds the reset countdown (`3h 51m`, shown on the bar when usage reaches
-`90%` or is critical, and always shown in the tooltip), consumption pace (`↑3` means three
-percentage points ahead of elapsed time; `↓3` means three behind), both, or
-neither. Countdowns show days and hours from 24 hours onward, and hours and
-minutes below that.
-
-When editing `config.toml` by hand, create a named instance. A raw widget id in
-the bar list creates an anonymous instance with no settings of its own:
-
-```toml
-[widget.ai_usage]
-type = "felipeartur/ai-usagebar:bar"
-visualization = "gauge"
-provider_limit = 2
-quota_window = "weekly"
-auto_providers = [ "openai", "antigravity" ]
-
-[bar.default]
-start = [ "clock", "ai_usage" ]
-```
-
-- Hover shows a compact summary of at most ten rows, with each quota window and
-  its reset countdown on its own line. Open the panel for all windows, models and diagnostics.
-- When a window is exhausted, the capsule shows its reset countdown without a
-  redundant percentage. If the countdown is unavailable or disabled, the
-  percentage remains visible. If several windows are exhausted, it uses the
-  latest reset. A critical warning below 100% does not count as exhaustion.
-- Click a provider or model to select its account. **Open panel in** chooses
-  whether the click opens All accounts or the selected provider's details. In
-  provider detail mode, clicking a model also highlights its card. All accounts
-  is available when more than one account is configured.
+- A vertical tick on each pill marks how much of the window has elapsed. When
+  usage is ahead of the tick, the fill changes from `primary` to the theme's
+  `secondary` warning color.
+- An account with no 5-hour limit reports no session window. Its session pill is
+  drawn as an outline with no fill and no tick, labelled `∞`. A real 0% keeps
+  the solid track, the tick and `0%`.
+- The provider icon turns to the `error` color when a read fails; the last
+  numbers stay. A clock icon marks a stale reading.
+- Hover shows the account, each window's percentage and elapsed time, and a
+  separate row with when each window resets: the countdown and the clock time.
+- Left click opens the panel at the active account. **Open panel in** chooses
+  whether that is All accounts or the account's details.
 - Right click requests a refresh. One poller serves every capsule and keeps at
   most one pending refresh when requests arrive during a read.
 - Middle click opens the widget's settings, as everywhere else in the shell.
 
-Scroll over an automatic capsule to cycle through providers in its filter.
-A pinned provider does not cycle.
+The ticks move with the clock, so the capsule redraws every 30 seconds without
+running the CLI.
 
 The script handles left click; the shell opens settings on middle click.
 Right click is a gesture binding in the widget settings, where you can assign
 another action or choose `none`.
 
-With multiple accounts, a direct panel open starts with **All accounts**: a scrolling overview
-with up to four named account cards per page. Previous/next controls and the
-visible range keep every account reachable. Each card previews up to three
-reported quota windows (or all reported windows and model pools for Antigravity),
-or its balance, and shows reading age and stale status.
-Extra windows are identified rather than silently dropped.
+With multiple accounts, a direct panel open starts with **All accounts**: every
+account on one scrolling list of compact cards. Cards are ordered as follows:
+
+1. the active Claude account;
+2. accounts with usage left in both the session and the overall weekly window
+   (a full model pool such as `Fable (7d)` does not count);
+3. everything else.
+
+Within each group, the account whose weekly quota resets soonest comes first.
+The bare `anthropic` entry is hidden when named Claude accounts exist, because
+it repeats the active one.
+
+A card with session or weekly windows shows the same pills as the bar, with
+percentages and reset countdowns. Other providers show their first two readings
+or their balance. Each reset credit the CLI reports gets its own line on the
+card, with its title and the time left before it expires. Each card also shows
+read failures, reading age and stale status.
+
+Every inactive Claude account has a **Switch** button. It runs
+`ai-usagebar account switch <label> --cli` at once, with no confirmation, then
+reads the account status and usage again. The buttons are disabled while a
+switch runs, and a failure is shown on that account's card. An account whose
+5-hour or overall weekly window is at 100% can only run on extra usage. When
+its `Extra usage` metric (the monthly pay-as-you-go cap) is under 100%, the
+button stays enabled and shows a coin glyph instead of the switch arrows.
+Otherwise it is disabled. A full model pool such as Fable does not count
+toward the limit. The active account
+is marked **Active**. Other providers have no switch button.
 
 Click a card to see its windows, models, credits and optional priorities.
 **All accounts** returns to the overview without changing the CLI's active
@@ -185,9 +169,8 @@ without a visible reading shows the error and retry action instead of a stale-da
 Model-specific Gemini pools, such as
 Gemini 4 Argon, appear inside the Gemini card with their own name, reset and usage. They do not add a separate bar reading.
 A full Gemini 4 Argon pool does not mark Antigravity as
-exhausted while its shared windows remain available. The panel sorts providers by headline
-severity, then usage; equal readings keep the CLI's order. Automatic bar selection
-uses the same priorities, then the configured primary provider and account id.
+exhausted while its shared windows remain available. The detail tabs follow the
+same order as the All accounts list.
 
 Antigravity is the exception when its local server briefly disappears: the last
 reading stays visible with a stale indicator and its original update time until
@@ -242,8 +225,8 @@ account estimate. It does not calculate a separate projection for each model.
 
 The ordinary provider tabs, refresh action and keyboard navigation remain in
 place. Old or expired suggestions are labelled and need a fresh report before
-an account can be suggested again. The bar keeps its selection by severity and
-usage.
+an account can be suggested again. The bar always shows the active Claude
+account.
 
 While enabled, the CLI records a small local history of quota percentages and
 timestamps. Turning the option off hides the embedded details and stops
@@ -261,26 +244,12 @@ Plugin-level, shared by the poller, every capsule and the panel:
 | `refresh_minutes` | `int` | `5` | Minutes between quota calls, from 1 to 120. Countdowns tick locally in between. |
 | `usage_display` | `select` | `used` | Show `used` or `remaining` quota in every capsule and the panel. Numbers and gauges change together; colors and priority still follow consumption. Balances are unchanged. |
 
-Per widget instance, so two capsules can follow two providers. Turn on the native
-settings editor's **Advanced** switch to edit `account`, `auto_providers`,
-`glyph_position` and `color_by_usage`; existing values remain active either way.
+Per widget instance:
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `vendor` | `select` | `auto` | Which plan this capsule tracks. `auto` follows the busiest provider, with the CLI's own `[ui] primary` breaking ties. |
-| `account` | `string` | empty | Optional named account label from the CLI config. Ignored on `auto`. |
-| `quota_window` | `select` | `auto` | Keep the default windows, or choose `session`, `weekly` or `monthly`. An exhausted window takes priority. A window the provider does not report shows no percentage. |
-| `auto_providers` | `string_list` | `[]` | Limit automatic selection, scroll and `+N` to these provider or account IDs. A provider ID includes all its accounts; `provider@account` selects that account. Empty includes all. Ignored for a pinned provider. |
-| `visualization` | `select` | `gauge` | `gauge` or `none`, as described above. |
-| `show_exhausted_value` | `bool` | `false` | Keep the exhausted percentage visible alongside the reset countdown when `show_value` is enabled. |
-| `show_value` | `bool` | `true` | Show the reported percentage or amount as text. |
-| `show_glyph` | `bool` | `true` | Show the provider's icon. |
-| `glyph_position` | `select` | `before` | `before` or `after` the reading. |
-| `panel_view` | `select` | `overview` | Open All accounts or the selected provider's details. An empty capsule opens All accounts. |
-| `provider_limit` | `int` | `1` | How many providers one capsule carries, busiest first, from 1 to 4. Only applies on `auto`. |
-| `extras` | `select` | `countdown` | Information beside the percentage: `countdown`, `pace`, `both` or `none`. |
-| `show_name` | `bool` | `false` | Show the provider name, or each model name for Antigravity. Long names are shortened; tooltips keep the full label. |
-| `color_by_usage` | `bool` | `true` | Color readings by quota severity. Turning it off does not hide error indicators. |
+| `show_glyph` | `bool` | `true` | Show the provider's icon before the pills. |
+| `panel_view` | `select` | `overview` | Open All accounts or the active account's details. An empty capsule opens All accounts. |
 
 ## Diagnostics
 
@@ -335,6 +304,14 @@ Point the panel at a provider, by the id `ai-usagebar` uses for it:
 noctalia msg plugin felipeartur/ai-usagebar:poller all select anthropic
 ```
 
+Make a named Claude account the `claude` CLI's login, as the panel's switch
+button does. A label is up to 64 letters, digits, `.`, `_` and `-`, starting
+with a letter or digit:
+
+```sh
+noctalia msg plugin felipeartur/ai-usagebar:poller all switch work
+```
+
 Request a provider catalog read without polling quotas:
 
 ```sh
@@ -352,14 +329,21 @@ labels; long technical details require an explicit click inside Diagnostics.
   the panel, or from the IPC event above. Capsules and the panel are subscribers
   of plugin state, so a second monitor or a second capsule costs no extra
   process. Enabling priorities adds `--priorities` to that same process.
+- Each poll also runs `ai-usagebar account status --json` to learn the active
+  Claude account. Only the account label is published to plugin state; the
+  email addresses in that output are not.
+- A switch runs `ai-usagebar account switch <label> --cli` with a 30-second
+  timeout, one switch at a time. The label is validated and passed as an
+  argument list, not through a shell.
 - Diagnostics adds a separate `ai-usagebar vendors --json` process on demand,
   with a five-second timeout and one query in flight. It contacts no provider
   endpoint. The CLI may enforce restrictive permissions on its own configuration
   file when loading it, as it does for quota reads.
 - Custom providers can use a known brand icon supplied by the CLI. Unknown brands
   use the provider fallback. Brand metadata never chooses a dashboard URL.
-- The plugin makes no network calls and writes no files of its own. Everything
-  it knows arrives on those commands' stdout. Catalog state retains only provider
+- The plugin makes no network calls and writes no files of its own; a switch
+  changes the CLI's login through the CLI. Everything it knows arrives on those
+  commands' stdout. Catalog state retains only provider
   names, IDs and configuration flags, without login commands or environment fields.
 - A failed whole-report read keeps the previous report and marks it as stale.
   Without a previous report, the panel shows the failure and its scrubbed
@@ -379,17 +363,18 @@ labels; long technical details require an explicit click inside Diagnostics.
 Run the tests from the `ai-usagebar` directory:
 
 ```sh
-lua tests/scrub_test.lua
-lua tests/refresh_test.lua
-lua tests/bar_test.lua
-lua tests/panel_test.lua
+TZ=America/New_York lua tests/scrub_test.lua
+TZ=America/New_York lua tests/refresh_test.lua
+TZ=America/New_York lua tests/bar_test.lua
+TZ=America/New_York lua tests/panel_test.lua
 TZ=America/New_York lua tests/shared_test.lua
-lua tests/catalog_test.lua
+TZ=America/New_York lua tests/catalog_test.lua
 ```
 
 The suites cover secret redaction and its callback CPU budget, refresh scheduling,
-account selection, bar and panel rendering, optional priorities, timestamps and
-on-demand diagnostics, multi-account overview navigation and excessive reports.
+the active-account read and account switching, the bar's quota pills and ticks,
+the account order and switch buttons in the panel, optional priorities,
+timestamps, on-demand diagnostics and excessive reports.
 They use synthetic reports; they do not read credentials
 or call provider APIs. UI trees are checked in a test host, without rendering the
 native shell.

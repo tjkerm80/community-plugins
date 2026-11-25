@@ -16,6 +16,11 @@ local expandedDiagnosticKey = nil
 local catalog = nil
 local catalogLoading = false
 local catalogError = false
+-- The active Claude account label, the one being switched to, and the last
+-- switch that failed, as the poller publishes them.
+local activeLabel = ""
+local switching = nil
+local switchError = nil
 
 local shared = require("./shared.luau")
 local providerGlyph, parseIso = shared.providerGlyph, shared.parseIso
@@ -72,10 +77,25 @@ end
 
 -- ── Entry selection ───────────────────────────────────────────────────────────
 
+-- `shared.profiles` order: the active account, then accounts with quota left,
+-- then the rest, each group from the soonest weekly reset.
+local visibleProfiles = nil
 local visibleEntries = nil
+local function profiles()
+    if visibleProfiles == nil then visibleProfiles = shared.profiles(report, activeLabel) end
+    return visibleProfiles
+end
+
 local function entries()
-    if visibleEntries == nil then visibleEntries = shared.entries(report) end
+    if visibleEntries == nil then
+        visibleEntries = {}
+        for _, row in ipairs(profiles()) do visibleEntries[#visibleEntries + 1] = row.entry end
+    end
     return visibleEntries
+end
+
+local function forgetEntries()
+    visibleProfiles, visibleEntries = nil, nil
 end
 
 local function configuredEntries()
@@ -1196,96 +1216,112 @@ local function overviewMetricNode(metric, label)
     return ui.column({ gap = 2, align = "stretch" }, children)
 end
 
-local function antigravityOverviewGroups(entry)
-    local order, byName, pools = {}, {}, {}
-    for _, metric in ipairs(type(entry.metrics) == "table" and entry.metrics or {}) do
-        if type(metric) == "table" then
-            local rawLabel = tostring(metric.label or "")
-            local geminiPool = isGeminiPool(metric, rawLabel)
-            local family = geminiPool and "Gemini" or rawLabel
-            if byName[family] == nil then
-                byName[family] = {}
-                order[#order + 1] = family
-            end
-            local windowKey = shared.metricWindow(metric)
-            local windowLabel = windowKey ~= nil and noctalia.tr("ui." .. windowKey) or ""
-            local rowLabel = (geminiPool or windowLabel == "")
-                and (rawLabel .. (windowLabel ~= "" and " · " .. windowLabel or ""))
-                or windowLabel
-            local target = geminiPool and (pools[family] or {}) or byName[family]
-            if geminiPool then pools[family] = target end
-            target[#target + 1] = { metric = metric, label = rowLabel }
-        end
-    end
-    for family, list in pairs(pools) do
-        for _, item in ipairs(list) do
-            byName[family][#byName[family] + 1] = item
-        end
-    end
-    return order, byName
+local QUOTA_WINDOWS = { { id = "session", tag = "5h" }, { id = "weekly", tag = "7d" } }
+
+-- One quota window on a card: the bar's pill, its percentage and the countdown.
+local function quotaRow(entry, window)
+    local gauge = shared.windowGauge(entry, window.id)
+    local reset = gauge.metric ~= nil and shared.countdown(gauge.metric) or ""
+    return ui.row({ key = window.id, gap = 6, align = "center" }, {
+        ui.label({ text = window.tag, fontSize = 10, color = "on_surface/0.8", width = 18 }),
+        shared.quotaPill(ui, gauge, 210),
+        ui.label({ text = shared.gaugeText(gauge, displayMode()), fontSize = 11, fontWeight = "bold",
+            color = "on_surface", width = 40, textAlign = "end", maxLines = 1 }),
+        ui.label({ text = reset, fontSize = 10, color = "on_surface/0.8", maxLines = 1,
+            flexGrow = 1, textAlign = "end" }),
+    })
 end
 
-local function overviewCard(entry)
+-- The active account is marked; every other Claude account gets a button that
+-- makes it the `claude` CLI's login at once. An account whose session or
+-- weekly window is used up can only run on extra usage: its button carries a
+-- coin glyph when extra usage is left and is disabled when it is not. Other
+-- providers get neither.
+local function switchControl(row)
+    if row.active then
+        return ui.row({ gap = 3, align = "center", paddingH = 6, paddingV = 2, radius = 4,
+            fill = "primary/0.14" }, {
+            ui.glyph({ name = "circle-check", size = 11, color = "primary" }),
+            ui.label({ text = noctalia.tr("ui.active"), fontSize = 10, color = "primary", maxLines = 1 }),
+        })
+    end
+    if row.label == nil then return nil end
+    local busy = switching == row.label
+    local extraUsageOnly = row.limited and row.extraUsage
+    local tooltip = extraUsageOnly and "ui.switch_extra_usage"
+        or row.limited and "ui.switch_limited" or "ui.switch_tooltip"
+    return ui.button({
+        key = "switch-" .. row.label,
+        text = noctalia.tr(busy and "ui.switching" or "ui.switch"),
+        glyph = busy and "loader-2" or extraUsageOnly and "coin" or "switch-horizontal",
+        variant = "outline", controlSize = "sm",
+        tooltip = noctalia.tr(tooltip, { label = row.label }),
+        enabled = switching == nil and (not row.limited or row.extraUsage),
+        onClick = function()
+            noctalia.state.set("command", { action = "switch", label = row.label, at = noctalia.nowMs() })
+        end,
+    })
+end
+
+local function overviewCard(row)
+    local entry = row.entry
     local name = tostring(entry.display_name or entry.name or entry.id or "")
     local old = entry.stale == true or failure.code ~= ""
     local body = { ui.row({ gap = 8, align = "center" }, {
         ui.glyph({ name = providerGlyph(entry.id, entry.brand), size = 18, color = "primary" }),
         ui.label({ text = name, fontSize = 12, fontWeight = "semibold", color = "on_surface",
-            maxLines = 1, maxWidth = 300, flexGrow = 1 }),
+            maxLines = 1, maxWidth = 260, flexGrow = 1 }),
+        switchControl(row),
     }) }
-    local isAntigravity = shared.baseProvider(entry.id) == "antigravity"
-    local count = 0
-    if isAntigravity then
-        local order, byName = antigravityOverviewGroups(entry)
-        for _, family in ipairs(order) do
-            body[#body + 1] = ui.box({ height = 1, fill = "outline_variant/0.14" })
-            if family ~= "" then
-                body[#body + 1] = ui.row({ gap = 6, align = "center" }, {
-                    ui.glyph({ name = modelGlyph(family), size = 13, color = "on_surface/0.8" }),
-                    ui.label({ text = modelDisplayName(family), fontSize = 11, fontWeight = "semibold",
-                        color = "on_surface", maxLines = 1 }),
-                })
-            end
-            for _, item in ipairs(byName[family]) do
-                count = count + 1
-                body[#body + 1] = overviewMetricNode(item.metric, item.label)
-            end
-        end
+    local windowed = false
+    for _, window in ipairs(QUOTA_WINDOWS) do
+        if shared.windowGauge(entry, window.id).metric ~= nil then windowed = true end
+    end
+    if windowed then
+        for _, window in ipairs(QUOTA_WINDOWS) do body[#body + 1] = quotaRow(entry, window) end
     else
+        -- A provider without session or weekly quotas keeps its first readings.
+        local count = 0
         for _, metric in ipairs(type(entry.metrics) == "table" and entry.metrics or {}) do
-            if type(metric) == "table" and metric.model_pool ~= true then
+            if type(metric) == "table" and metric.model_pool ~= true and count < 2 then
                 count = count + 1
-                if count <= 3 then
-                    body[#body + 1] = overviewMetricNode(metric, tostring(metric.label or ""))
-                end
+                body[#body + 1] = overviewMetricNode(metric, tostring(metric.label or ""))
             end
         end
-        if count > 3 then
-            body[#body + 1] = ui.label({ text = noctalia.tr("ui.more_windows", { count = count - 3 }),
-                fontSize = 10, color = "on_surface/0.8" })
+        if count == 0 then
+            body[#body + 1] = ui.label({ text = shared.balanceText(entry) or noctalia.tr("ui.no_usage"),
+                fontSize = 12, fontWeight = "bold", color = "on_surface" })
         end
     end
-    if count == 0 then
-        body[#body + 1] = ui.label({ text = shared.balanceText(entry) or noctalia.tr("ui.no_usage"),
-            fontSize = 12, fontWeight = "bold", color = "on_surface" })
+    for index, credit in ipairs(shared.resetCredits(entry)) do
+        body[#body + 1] = ui.row({ key = "reset-credit-" .. index, gap = 6, align = "center" }, {
+            ui.glyph({ name = "ticket", size = 11, color = "primary" }),
+            ui.label({ text = credit.title, fontSize = 10, color = "on_surface", maxLines = 1, flexGrow = 1 }),
+            credit.expires ~= "" and ui.label({ text = credit.expires, fontSize = 10, color = "on_surface/0.8",
+                maxLines = 1, textAlign = "end" }) or nil,
+        })
     end
     if readFailure(entry) then
         body[#body + 1] = ui.label({ text = noctalia.tr("ui.error.failed"), fontSize = 11, color = "error" })
     end
-    local stamp = updatedText(entry)
-    if old or stamp ~= "" then
+    if type(switchError) == "table" and switchError.label == row.label then
+        local detail = tostring(switchError.detail or "")
+        body[#body + 1] = ui.label({ text = noctalia.tr("ui.switch_failed")
+            .. (detail ~= "" and (": " .. detail) or ""), fontSize = 10, color = "error", maxLines = 3 })
+    end
+    if old then
+        local stamp = updatedText(entry)
         body[#body + 1] = ui.row({ gap = 4, align = "center" }, {
-            ui.glyph({ name = old and "history" or "clock", size = 10, color = "on_surface/0.8" }),
-            ui.label({ text = old and noctalia.tr("ui.stale_hint") or stamp,
-                fontSize = 10, color = "on_surface/0.8", maxLines = 2 }),
-            old and stamp ~= "" and ui.label({ text = stamp, fontSize = 10,
-                color = "on_surface/0.8", maxLines = 2 }) or nil,
+            ui.glyph({ name = "history", size = 10, color = "on_surface/0.8" }),
+            ui.label({ text = noctalia.tr("ui.stale_hint"), fontSize = 10, color = "on_surface/0.8", maxLines = 2 }),
+            stamp ~= "" and ui.label({ text = stamp, fontSize = 10, color = "on_surface/0.8", maxLines = 2 }) or nil,
         })
     end
-    return ui.column({ key = "overview-" .. tostring(entry.id), gap = 4, padding = 9, radius = 9,
+    return ui.column({ key = "overview-" .. tostring(entry.id), gap = 5, padding = 9, radius = 9,
         fill = "surface_container", borderWidth = 1,
-        border = (hoveredAccount == entry.id or overviewSelection == entry.id)
-            and "hover" or "outline_variant/0.45",
+        border = row.active and "primary/0.6"
+            or (hoveredAccount == entry.id or overviewSelection == entry.id) and "hover"
+            or "outline_variant/0.45",
         onHover = function(state)
             local nextHover = state == "true" and entry.id or nil
             if state ~= "true" and hoveredAccount ~= entry.id then return end
@@ -1297,33 +1333,19 @@ end
 -- Reserve native frame/padding space inside the manifest's 640px maximum.
 local MAX_VIEWPORT_HEIGHT = 608
 
-local function renderOverview(candidates)
+-- Every profile on one scrolling list, in `shared.profiles` order.
+local function renderOverview(rows)
     local selected = currentEntry()
     if selected ~= nil and noctalia.state.get("selected") ~= selected.id then
         noctalia.state.set("selected", selected.id)
     end
-    local selectedIndex = 1
-    for index, entry in ipairs(candidates) do
-        if selected ~= nil and entry.id == selected.id then selectedIndex = index; break end
-    end
-    local first = math.floor((selectedIndex - 1) / 4) * 4 + 1
-    local last = math.min(#candidates, first + 3)
-    local cards, height = {}, 148
-    for index = first, last do
-        local entry = candidates[index]
-        cards[#cards + 1] = overviewCard(entry)
-        local isAntigravity = shared.baseProvider(entry.id) == "antigravity"
-        local maxWindows = isAntigravity and math.huge or 3
-        local windows = 0
-        for _, metric in ipairs(type(entry.metrics) == "table" and entry.metrics or {}) do
-            if type(metric) == "table" and (isAntigravity or metric.model_pool ~= true) then windows = windows + 1 end
-        end
-        local familyOverhead = 0
-        if isAntigravity then
-            local groups = antigravityOverviewGroups(entry)
-            familyOverhead = #groups * 28
-        end
-        height = height + 70 + familyOverhead + math.min(windows, maxWindows) * 34 + (windows > maxWindows and 16 or 0)
+    local cards, height = {}, 120
+    for _, row in ipairs(rows) do
+        cards[#cards + 1] = overviewCard(row)
+        local extra = (readFailure(row.entry) and 16 or 0) + (row.entry.stale == true and 16 or 0)
+            + #shared.resetCredits(row.entry) * 18
+            + ((type(switchError) == "table" and switchError.label == row.label) and 30 or 0)
+        height = height + 92 + extra
     end
     if #cards == 0 then
         cards[#cards + 1] = ui.label({ text = noctalia.tr("ui.no_usage"), fontSize = 12, color = "on_surface/0.8" })
@@ -1331,17 +1353,7 @@ local function renderOverview(candidates)
             color = "on_surface/0.8", maxLines = 3 })
     end
     local footer = {}
-    if #candidates > 4 then
-        footer[#footer + 1] = ui.spacer({ flexGrow = 1 })
-        footer[#footer + 1] = ui.button({ glyph = "chevron-left", variant = "ghost", controlSize = "sm",
-            tooltip = noctalia.tr("ui.previous_page"), enabled = first > 1,
-            onClick = function() noctalia.state.set("selected", candidates[math.max(1, first - 4)].id); render() end })
-        footer[#footer + 1] = ui.label({ text = tostring(first) .. "–" .. tostring(last) .. " / " .. tostring(#candidates),
-            fontSize = 10, color = "on_surface/0.8" })
-        footer[#footer + 1] = ui.button({ glyph = "chevron-right", variant = "ghost", controlSize = "sm",
-            tooltip = noctalia.tr("ui.next_page"), enabled = last < #candidates,
-            onClick = function() noctalia.state.set("selected", candidates[math.min(#candidates, last + 1)].id); render() end })
-    elseif failure.code ~= "" then
+    if failure.code ~= "" then
         footer[#footer + 1] = ui.label({ text = noctalia.tr("ui.stale_hint"), fontSize = 10,
             color = "secondary", maxLines = 1 })
     end
@@ -1358,12 +1370,9 @@ local function renderOverview(candidates)
                 closeButton(),
             }),
         }),
-        ui.row({ gap = 8, paddingV = 4, align = "center" }, {
-            ui.label({ text = noctalia.tr("ui.overview"), fontSize = 12, fontWeight = "semibold", color = "on_surface" }),
-        }),
         ui.scroll({ key = "overview-scroll", gap = 6, align = "stretch", flexGrow = 1,
             revealKey = "overview-" .. tostring(noctalia.state.get("selected") or "") }, cards),
-        ui.row({ gap = 4, align = "center" }, footer),
+        #footer > 0 and ui.row({ gap = 4, align = "center" }, footer) or nil,
     }))
 end
 
@@ -1445,7 +1454,14 @@ function render()
 
     local candidates = configuredEntries()
 
-    if showOverview and #candidates ~= 1 then renderOverview(candidates); return end
+    if showOverview and #candidates ~= 1 then
+        local rows = {}
+        for _, row in ipairs(profiles()) do
+            if configured(row.entry) then rows[#rows + 1] = row end
+        end
+        renderOverview(rows)
+        return
+    end
     if #candidates == 1 then showOverview = false end
 
     local compactTabs = not tabsFitWithNames(candidates)
@@ -1619,7 +1635,7 @@ end
 noctalia.state.watch("report", function(value)
     if type(value) == "table" then
         report = value
-        visibleEntries = nil
+        forgetEntries()
         failure = NO_FAILURE
         rememberPlans()
         render()
@@ -1638,6 +1654,22 @@ end)
 
 noctalia.state.watch("refresh_queued", function(value)
     refreshQueued = value == true
+    render()
+end)
+
+noctalia.state.watch("active_account", function(value)
+    activeLabel = type(value) == "string" and value or ""
+    forgetEntries()
+    render()
+end)
+
+noctalia.state.watch("switching", function(value)
+    switching = type(value) == "string" and value or nil
+    render()
+end)
+
+noctalia.state.watch("switch_error", function(value)
+    switchError = type(value) == "table" and value or nil
     render()
 end)
 
@@ -1676,7 +1708,11 @@ function onOpen(context)
     -- has one, and the poller drops requests that arrive too close together.
     if showSetup then requestCatalog() else requestRefresh() end
     report = noctalia.state.get("report")
-    visibleEntries = nil
+    local published = noctalia.state.get("active_account")
+    activeLabel = type(published) == "string" and published or ""
+    switching = type(noctalia.state.get("switching")) == "string" and noctalia.state.get("switching") or nil
+    switchError = type(noctalia.state.get("switch_error")) == "table" and noctalia.state.get("switch_error") or nil
+    forgetEntries()
     rememberPlans()
     failure = asFailure(noctalia.state.get("error"))
     polling = noctalia.state.get("polling") == true

@@ -21,6 +21,8 @@ local env = setmetatable({ noctalia = {
     string = { trim = function(value) return tostring(value):match("^%s*(.-)%s*$") end },
     json = { decode = function() return decoded end },
     runAsync = function(command, callback, timeout)
+        -- The active-account read is an argv table; this test follows usage and catalog reads.
+        if type(command) == "table" then return spawn end
         calls[#calls + 1] = { command = command, callback = callback, timeout = timeout }
         return spawn
     end,

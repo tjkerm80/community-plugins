@@ -9,6 +9,9 @@ end
 
 local values, watchers = {}, {}
 local commands, callbacks, timeouts = {}, {}, {}
+-- `account status` and `account switch` run as argv tables; they are kept apart
+-- so the usage reads above keep their indexes.
+local accountRuns = {}
 local notifications = {}
 local decodedReport = { entries = {} }
 local now = 5000
@@ -29,6 +32,10 @@ local noctalia = {
     getConfig = function(key) return key == "refresh_minutes" and 5 or nil end,
     setUpdateInterval = function(ms) intervals[#intervals + 1] = ms end,
     runAsync = function(command, callback, timeout)
+        if type(command) == "table" then
+            accountRuns[#accountRuns + 1] = { argv = command, callback = callback, timeout = timeout }
+            return true
+        end
         commands[#commands + 1] = command
         callbacks[#callbacks + 1] = callback
         timeouts[#timeouts + 1] = timeout
@@ -160,24 +167,6 @@ local shared = assert(load(read("shared.luau"), "shared", "t", sharedEnv))()
 local incompleteFailure = shared.asFailure({})
 assert(incompleteFailure.code == "" and incompleteFailure.detail == "",
     "an incomplete failure table should behave as no failure")
--- Read the offered providers out of the manifest rather than listing them again
--- here: a copy of the dropdown is a third place to keep the same set current, and
--- the one that silently stops matching. What is worth asserting is the relation
--- between the two -- every provider the settings editor offers has a glyph of its
--- own -- and that only holds if the list comes from the manifest itself.
-local manifest = read("plugin.toml")
-local vendorSetting = manifest:match('key = "vendor".-\n%s*\n') or manifest:match('key = "vendor".*')
-local offered = {}
-for value in vendorSetting:gmatch('{ value = "([^"]+)"') do
-    if value ~= "auto" then offered[#offered + 1] = value end
-end
-assert(#offered > 10, "the vendor dropdown should have been read from the manifest")
-for _, id in ipairs(offered) do
-    -- "brain" is the fallback, so a provider still on it has no glyph of its own.
-    assert(shared.providerGlyph(id) ~= "brain", "missing glyph for " .. id)
-    assert(shared.providerDashboard(id) ~= nil, "missing quota service link for " .. id)
-end
-
 -- A named account is drawn with its provider's glyph, not the fallback.
 assert(shared.providerGlyph("anthropic@gmail") == shared.providerGlyph("anthropic"),
     "an account should inherit the provider's glyph")
@@ -206,7 +195,10 @@ do
         state = { get = function(k) return state[k] end, set = function(k,v) state[k]=v end, watch = function() end },
         string = { trim = function(v) return tostring(v):match("^%s*(.-)%s*$") end },
         json = { decode = function() return decoded end },
-        runAsync = function(command, callback) reads[#reads+1]={command=command, callback=callback}; return true end,
+        runAsync = function(command, callback)
+            if type(command) == "string" then reads[#reads+1]={command=command, callback=callback} end
+            return true
+        end,
     }
     local runtime = setmetatable({ noctalia=host }, { __index=_G })
     runtime.require = function() return assert(load(read("shared.luau"),"shared","t",runtime))() end
@@ -263,4 +255,75 @@ do
     end
 end
 
-io.write("ok: refresh queue coalesced, timeouts rejected, provider visuals complete\n")
+-- Every poll re-reads the active account and publishes its label alone.
+do
+    local function lastRun() return accountRuns[#accountRuns] end
+    lastRun().callback({ exitCode = 2, stdout = "" })
+    local before = #accountRuns
+    now = now + 3000
+    env.onIpc("refresh")
+    assert(#accountRuns == before + 1, "every poll should read the active account")
+    assert(table.concat(lastRun().argv, " ") == "ai-usagebar account status --json",
+        "the status read should be the fixed argv")
+    noctalia.json.decode = function()
+        return { cli = { active_label = "work", active_account_uuid = "uuid",
+            accounts = { { label = "work", email = "person@example.com", active = true } } } }
+    end
+    lastRun().callback({ exitCode = 0, stdout = "{}" })
+    assert(values.active_account == "work", "the active label should be published")
+    for key, value in pairs(values) do
+        assert(not tostring(value):find("example.com", 1, true), "no e-mail may reach state: " .. key)
+    end
+
+    now = now + 3000
+    env.onIpc("refresh")
+    noctalia.json.decode = function() return { cli = { active_label = "bad label; rm" } } end
+    lastRun().callback({ exitCode = 0, stdout = "{}" })
+    assert(values.active_account == "", "a label that could not be switched to is dropped")
+
+    now = now + 3000
+    env.onIpc("refresh")
+    lastRun().callback({ exitCode = 2, stdout = "", stderr = "unknown subcommand" })
+    assert(values.active_account == "", "an older CLI without account status leaves no active account")
+    noctalia.json.decode = function() return decodedReport end
+    callbacks[#callbacks]({ exitCode = 0, stdout = "{}" })
+
+    -- A queued usage read started another status read; answer it.
+    if lastRun().argv[2] == "account" and lastRun().argv[3] == "status" then
+        lastRun().callback({ exitCode = 2, stdout = "" })
+    end
+    if values.polling then callbacks[#callbacks]({ exitCode = 0, stdout = "{}" }) end
+
+    -- A switch runs the CLI with the label as one argument, then re-reads both.
+    before = #accountRuns
+    local usageBefore = #callbacks
+    now = now + 3000
+    state.set("command", { action = "switch", label = "personal" })
+    assert(#accountRuns == before + 1 and values.switching == "personal", "a switch should start and show")
+    local switchRun = lastRun()
+    assert(table.concat(switchRun.argv, " ") == "ai-usagebar account switch personal --cli",
+        "the switch should be Claude CLI only")
+    state.set("command", { action = "switch", label = "other" })
+    assert(#accountRuns == before + 1, "a second switch waits for the first")
+    now = now + 3000
+    switchRun.callback({ exitCode = 0, stdout = "" })
+    assert(values.switching == nil and values.switch_error == nil, "a good switch clears its state")
+    assert(#accountRuns == before + 2 and table.concat(lastRun().argv, " ") == "ai-usagebar account status --json",
+        "a switch should re-read the active account")
+    assert(#callbacks == usageBefore + 1, "a switch should re-read usage")
+    lastRun().callback({ exitCode = 0, stdout = "{}" })
+    callbacks[#callbacks]({ exitCode = 0, stdout = "{}" })
+
+    before = #accountRuns
+    now = now + 3000
+    env.onIpc("switch", "x; rm -rf ~")
+    env.onIpc("switch", "")
+    assert(#accountRuns == before, "labels that are not account names never reach the CLI")
+
+    env.onIpc("switch", "personal")
+    lastRun().callback({ exitCode = 1, stdout = "", stderr = "error: token=abc123 refused" })
+    assert(values.switch_error.label == "personal", "a failed switch should name the account")
+    assert(not values.switch_error.detail:find("abc123", 1, true), "switch errors are scrubbed")
+end
+
+io.write("ok: refresh queue coalesced, timeouts rejected, account status and switch\n")

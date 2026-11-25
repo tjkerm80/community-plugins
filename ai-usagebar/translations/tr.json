@@ -9,29 +9,6 @@
         "meter": "Segmentler",
         "pill": "Yüzde"
       }
-    },
-    "vendor": {
-      "description": "Bu kapsülün hangi planı takip edeceği. İkisini izlemek için widget'ı iki kez ekleyin.",
-      "label": "Sağlayıcı",
-      "option": {
-        "anthropic": "Claude",
-        "anthropic_api": "Anthropic API",
-        "antigravity": "Antigravity",
-        "auto": "Otomatik (birincil)",
-        "cursor": "Cursor",
-        "deepseek": "DeepSeek",
-        "grok": "Grok",
-        "kilo": "Kilo",
-        "kimi": "Kimi",
-        "kiro": "Kiro",
-        "minimax": "MiniMax",
-        "moonshot": "Moonshot",
-        "novita": "Novita",
-        "openai": "Codex",
-        "openrouter": "OpenRouter",
-        "supergrok": "SuperGrok",
-        "zai": "Z.AI"
-      }
     }
   },
   "ui": {
@@ -49,11 +26,8 @@
       "timed_out": "ai-usagebar yanıt vermedi",
       "timed_out_hint": "ai-usagebar yanıt vermedi"
     },
-    "hidden_label": "Gösterilmiyor",
-    "hidden_value": "{count} tane daha, paneli açmak için tıklayın",
     "loading": "Yükleniyor…",
     "no_usage": "Kullanım bildirilmedi",
-    "not_configured": "`{vendor}` ai-usagebar içinde yapılandırılmamış",
     "now": "şimdi",
     "retry": "Tekrar dene",
     "stale": "güncel değil",
@@ -61,6 +35,20 @@
     "title": "Yapay Zeka Kullanımı",
     "unavailable": "Kullanılamıyor",
     "updated": "Güncellendi",
-    "updated_ago": "{minutes} dakika önce güncellendi\n"
+    "updated_ago": "{minutes} dakika önce güncellendi\n",
+    "no_limit": "Limit yok",
+    "account": "Hesap",
+    "tooltip_used": "{percent} kullanıldı",
+    "tooltip_left": "{percent} kaldı",
+    "tooltip_elapsed": "%{percent} geçti",
+    "tooltip_resets": "{window} sıfırlanma",
+    "tooltip_data": "Veri",
+    "active": "Etkin",
+    "switch": "Geç",
+    "switching": "Geçiliyor…",
+    "switch_tooltip": "{label} hesabını Claude CLI girişi yap",
+    "switch_limited": "{label} kullanım sınırına ulaştı",
+    "switch_extra_usage": "{label} kullanım sınırına ulaştı; geçiş yapılırsa ek kullanım harcanır",
+    "switch_failed": "Geçiş başarısız"
   }
 }

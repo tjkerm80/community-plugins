@@ -266,16 +266,10 @@ assert(shared.metricWindow({ window_secs = 2592000, label = "Weekly" }) == "mont
 assert(shared.metricWindow({ label = "Codex weekly" }) == "weekly", "label-only weekly quota")
 assert(shared.metricWindow({ window_secs = 10800 }) == "session", "short sessions remain selectable")
 assert(shared.metricWindow({ label = "Monthly" }) == "monthly", "label-only monthly quota")
-assert(shared.windowMetric({ { label = "Weekly", percent = 40 } }, "monthly") == nil, "absent pinned windows must not fall back")
 assert(shared.displayPercent({ percent = 25 }, "remaining") == 75, "remaining complements consumption")
 assert(shared.displayPercent({ percent = 125 }, "remaining") == 0, "over-quota remaining stops at zero")
 assert(shared.displayPercent({}, "remaining") == nil, "missing quota never becomes remaining 100")
 assert(shared.displayPercent({ percent = "bad" }, "used") == nil, "invalid quota never becomes zero")
-
-assert(shared.capsuleMetric({ metrics = "invalid" }, "weekly") == nil,
-       "an explicit window must reject malformed metric collections without crashing")
-assert(shared.capsuleMetric({ metrics = 42 }, "monthly") == nil,
-       "numeric metric collections must not crash explicit window selection")
 
 -- A model-specific exhausted pool does not exhaust the provider's shared quota.
 local sharedSession = { label = "Gemini", percent = 55, window_secs = 18000 }
@@ -285,8 +279,6 @@ local argonPool = { label = "Gemini 4 Argon", percent = 100, window_secs = 60480
 local pooled = { id = "antigravity", metrics = { argonPool, sharedSession, sharedWeek } }
 assert(shared.headline(pooled) == sharedSession,
     "a full Argon pool must not replace usable shared quota in the provider headline")
-assert(shared.capsuleMetric(pooled, "weekly") == sharedWeek,
-    "explicit weekly selection must choose the shared weekly quota")
 local pooledShort, pooledWeek = shared.dualMetrics(pooled.metrics)
 assert(pooledShort == sharedSession and pooledWeek == sharedWeek,
     "provider gauges must use shared windows when model-specific pools are present")
@@ -296,12 +288,8 @@ assert(modelRows[1].displayName == "Gemini 4 Argon" and modelRows[1].metric == a
     "a model pool retains its name, full usage and reset in its own row")
 assert(shared.headline({ id = "antigravity", metrics = { argonPool } }) == argonPool,
     "a pool-only response must remain readable")
-assert(shared.capsuleMetric({ metrics = { argonPool } }, "session") == argonPool,
-    "an exhausted pool still blocks its own row when a window is selected")
 sharedWeek.percent = 100
 assert(shared.headline(pooled) == sharedWeek, "an exhausted shared quota still blocks the provider")
-assert(shared.capsuleMetric({ metrics = { sharedSession, argonPool } }, "weekly") == nil,
-    "a model pool must not fill a missing shared pinned window")
 
 local money = { headline = "value", value = "$12.50", percent = 75 }
 assert(shared.metricText(money, "used") == "$12.50"
@@ -410,3 +398,23 @@ assert(shared.unavailable(cachedMistral), "an undated rejected reading must rema
 assert(shared.providerGlyph("mistral") ~= "brain", "Mistral needs a provider glyph")
 assert(shared.providerDashboard("mistral@work") == "https://console.mistral.ai/",
     "Mistral accounts open the fixed provider dashboard")
+
+-- Claude profiles: labels from the account CLI are validated before they reach argv.
+assert(shared.isProfileLabel("work") and shared.isProfileLabel("t3-1.b_2"), "plain labels are accepted")
+for _, bad in ipairs({ "", "-y", "a b", "work;rm", ".hidden", string.rep("a", 65), 42 }) do
+    assert(not shared.isProfileLabel(bad), "label must be rejected: " .. tostring(bad))
+end
+assert(shared.profileLabel({ id = "anthropic@work" }) == "work", "a named Claude entry yields its label")
+assert(shared.profileLabel({ id = "anthropic" }) == nil and shared.profileLabel({ id = "openai@work" }) == nil,
+    "the bare login and other providers have no switchable label")
+
+-- Elapsed time comes from the reset clock, with the CLI's own figure as the fallback.
+local halfway = os.date("!%Y-%m-%dT%H:%M:%SZ", 1792166400 + 9000)
+assert(shared.windowElapsed({ reset_at = halfway, window_secs = 18000 }) == 50, "2.5h left of 5h is half elapsed")
+assert(shared.windowElapsed({ detail = "Resets in 6d 20h · 1% elapsed · 3pts ahead" }) == 1,
+    "without a reset time the detail's elapsed figure is used")
+assert(shared.windowElapsed({ reset_at = os.date("!%Y-%m-%dT%H:%M:%SZ", 1792166400 - 60), window_secs = 18000 }) == nil,
+    "a window that already reset has no elapsed time")
+local noLimit = shared.windowGauge({ metrics = {} }, "session")
+assert(noLimit.metric == nil and noLimit.ahead == false and shared.gaugeText(noLimit, "used") == "∞",
+    "a missing window is unlimited, not 0%")

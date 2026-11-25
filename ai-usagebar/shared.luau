@@ -427,14 +427,6 @@ function M.metricWindow(metric)
     return nil
 end
 
-function M.windowMetric(metrics, window)
-    if type(metrics) ~= "table" then return nil end
-    for _, metric in ipairs(metrics) do
-        if M.metricWindow(metric) == window then return metric end
-    end
-    return nil
-end
-
 function M.isRemaining(metric, display)
     return (type(metric) == "table" and metric.reading == "left") or display == "remaining"
 end
@@ -474,13 +466,6 @@ function M.metricText(metric, display)
         return value ~= "" and value or "—"
     end
     return M.percentText(metric, display)
-end
-
-function M.capsuleMetric(entry, window)
-    if type(entry) ~= "table" or type(entry.metrics) ~= "table" then return nil end
-    if window == nil or window == "auto" then return M.headline(entry) end
-    local metrics = sharedMetrics(entry.metrics)
-    return M.blockingMetric(metrics) or M.windowMetric(metrics, window)
 end
 
 function M.modelGlyph(label)
@@ -680,6 +665,252 @@ function M.priorities(report)
             }
         end
     end
+    return rows
+end
+
+-- ── Claude profiles ───────────────────────────────────────────────────────────
+-- A profile is one CLI account: `anthropic@<label>` in the report and `<label>`
+-- in `ai-usagebar account status --json`. The bar draws the active one and the
+-- panel lists them all in `profiles` order.
+
+local CLAUDE = "anthropic"
+
+-- Labels the panel may hand to `ai-usagebar account switch`. The poller checks
+-- again before it runs anything.
+function M.isProfileLabel(label)
+    return type(label) == "string" and #label <= 64 and label:match("^[%w][%w._%-]*$") ~= nil
+end
+
+-- The account label of a Claude entry, or nil for the bare default entry and for
+-- every other provider.
+function M.profileLabel(entry)
+    if type(entry) ~= "table" then return nil end
+    local base, label = tostring(entry.id or ""):match("^([^@]+)@(.+)$")
+    if base ~= CLAUDE or not M.isProfileLabel(label) then return nil end
+    return label
+end
+
+-- How far through its window a reading is, 0..100. Worked out from `reset_at`
+-- so the figure moves between polls; the CLI's "60% elapsed" is the fallback.
+-- nil once the window has rolled over, because the next one has not been read.
+function M.windowElapsed(metric)
+    if type(metric) ~= "table" then return nil end
+    local reset = M.parseIso(metric.reset_at)
+    local window = finiteNumber(metric.window_secs)
+    if reset ~= nil and window ~= nil and window > 0 then
+        local left = reset - os.time()
+        if left < 0 then return nil end
+        if left <= window then return (window - left) / window * 100 end
+    end
+    local elapsed = M.elapsedPercent(metric.detail)
+    if elapsed ~= nil and elapsed >= 0 and elapsed <= 100 then return elapsed end
+    return nil
+end
+
+local function quotaMetric(metrics, window)
+    local fallback = nil
+    for _, metric in ipairs(metrics) do
+        if type(metric) == "table" and metric.model_pool ~= true and M.metricWindow(metric) == window then
+            -- A model pool such as "Fable (7d)" shares the 7-day window with the
+            -- overall quota, so the label picks the overall one.
+            if window ~= "weekly" or tostring(metric.label or ""):lower():find("^weekly") then return metric end
+            fallback = fallback or metric
+        end
+    end
+    return fallback
+end
+
+-- One quota window of an entry, ready to draw. `window` is "session" or
+-- "weekly". `percent` is the used share (0 when the window is absent),
+-- `elapsed` is how far through the window we are (nil when unknown or absent),
+-- and `ahead` says usage is running ahead of time.
+function M.windowGauge(entry, window)
+    local metrics = type(entry) == "table" and type(entry.metrics) == "table" and entry.metrics or {}
+    local metric = quotaMetric(metrics, window)
+    if metric == nil then return { metric = nil, percent = 0, elapsed = nil, ahead = false } end
+    local percent = finiteNumber(metric.percent) or 0
+    local elapsed = M.windowElapsed(metric)
+    return {
+        metric = metric,
+        percent = percent,
+        elapsed = elapsed,
+        ahead = elapsed ~= nil and percent > elapsed,
+    }
+end
+
+local PILL_HEIGHT = 8
+local TICK_WIDTH = 2
+local PILL_TRACK = "on_surface/0.14"
+local PILL_TICK = "on_surface"
+local NO_LIMIT_OUTLINE = "on_surface/0.35"
+
+-- A window the CLI does not report is a limit the account does not have.
+M.NO_LIMIT_TEXT = "∞"
+
+-- The percentage beside a pill.
+function M.gaugeText(gauge, display)
+    if type(gauge) ~= "table" or gauge.metric == nil then return M.NO_LIMIT_TEXT end
+    return M.percentText(gauge.metric, display)
+end
+
+-- One `windowGauge` drawn `width` px wide, for the bar and the panel cards.
+-- `ui` is passed in because this module is loaded outside the UI hosts too.
+--
+-- The host has no overlay, so the pill is a row of boxes laid end to end: fill
+-- up to the used share, track after it, and a tick box at the elapsed share
+-- that splits whichever of the two it falls in. The fill takes the warning
+-- colour when usage is ahead of the tick. A window the account has no limit
+-- for draws hollow: an outline with no track and no tick, which is not 0% of
+-- a limit.
+function M.quotaPill(ui, gauge, width)
+    if type(gauge) ~= "table" or gauge.metric == nil then
+        return ui.row({ width = width, height = PILL_HEIGHT, minWidth = width, radius = 2,
+            border = NO_LIMIT_OUTLINE, borderWidth = 1 }, { ui.spacer({ key = "rest", flexGrow = 1 }) })
+    end
+    local used = math.floor(width * M.ratio(gauge.percent) + 0.5)
+    local fill = gauge.ahead and "secondary" or "primary"
+    local segments = {}
+    local function add(kind, size)
+        if size <= 0 then return end
+        segments[#segments + 1] = ui.box({
+            key = kind .. "-" .. tostring(#segments),
+            width = size,
+            height = PILL_HEIGHT,
+            radius = kind == "tick" and 1 or 2,
+            fill = kind == "fill" and fill or kind == "tick" and PILL_TICK or nil,
+        })
+    end
+
+    if gauge.elapsed == nil then
+        add("fill", used)
+    else
+        local tick = math.floor(width * M.ratio(gauge.elapsed) + 0.5) - math.floor(TICK_WIDTH / 2)
+        tick = math.max(0, math.min(width - TICK_WIDTH, tick))
+        if used <= tick then
+            add("fill", used)
+            add("track", tick - used)
+            add("tick", TICK_WIDTH)
+        else
+            add("fill", tick)
+            add("tick", TICK_WIDTH)
+            add("fill", used - tick - TICK_WIDTH)
+        end
+    end
+    segments[#segments + 1] = ui.spacer({ key = "rest", flexGrow = 1 })
+
+    return ui.row({ width = width, height = PILL_HEIGHT, minWidth = width, radius = 2,
+        fill = PILL_TRACK, gap = 0, align = "center" }, segments)
+end
+
+-- Whether the session or the overall weekly window is used up. Model pools
+-- do not count: a full Fable window leaves the account usable.
+function M.atLimit(entry)
+    if type(entry) ~= "table" then return false end
+    for _, window in ipairs({ "session", "weekly" }) do
+        local gauge = M.windowGauge(entry, window)
+        if gauge.metric ~= nil and gauge.percent >= 100 then return true end
+    end
+    return false
+end
+
+-- Whether the account's monthly extra usage (pay-as-you-go spending past the
+-- plan limits) still has room. The CLI reports it as an "Extra usage" metric
+-- whose percent is the share of the monthly cap spent; an account without
+-- extra usage has no such metric.
+function M.extraUsageLeft(entry)
+    if type(entry) ~= "table" or type(entry.metrics) ~= "table" then return false end
+    for _, metric in ipairs(entry.metrics) do
+        if type(metric) == "table" and tostring(metric.label or ""):lower():find("^extra usage") then
+            local percent = finiteNumber(metric.percent)
+            return percent ~= nil and percent < 100
+        end
+    end
+    return false
+end
+
+-- Quota left in both the session and the overall weekly window.
+function M.hasUsageLeft(entry)
+    if type(entry) ~= "table" or entry.status == "error" or M.unavailable(entry) then return false end
+    return not M.atLimit(entry)
+end
+
+-- The reset credits an entry holds, from the CLI's "Reset credits" block:
+-- { title, expires } per credit, in the CLI's order. A line reads
+-- "<title> · expires <date> (<time left>)"; `expires` is the time left, or the
+-- whole expiry when the line has no countdown, or "" when it has no expiry.
+function M.resetCredits(entry)
+    local credits = {}
+    local sections = type(entry) == "table" and type(entry.sections) == "table" and entry.sections or {}
+    for _, section in ipairs(sections) do
+        if type(section) == "table" and section.type == "block" and section.label == "Reset credits"
+            and type(section.body) == "table" then
+            for _, line in ipairs(section.body) do
+                local text = noctalia.string.trim(tostring(line))
+                local title, expiry = text:match("^(.-)%s+·%s+(.+)$")
+                if title == nil then title, expiry = text, "" end
+                local left = expiry:match("%(([^()]+)%)%s*$")
+                if title ~= "" then
+                    credits[#credits + 1] = { title = title, expires = left or expiry }
+                end
+            end
+        end
+    end
+    return credits
+end
+
+-- The entry the bar draws: the active account, or the bare default entry when
+-- no account is active or the report does not carry it.
+function M.activeProfile(report, activeLabel)
+    local fallback = nil
+    for _, entry in ipairs(M.entries(report)) do
+        local label = M.profileLabel(entry)
+        if label ~= nil and label == activeLabel then return entry end
+        if tostring(entry.id) == CLAUDE then fallback = entry end
+    end
+    return fallback
+end
+
+-- Every entry the panel lists, in display order: the active account, then
+-- entries with quota left, then the rest. Each group runs from the soonest
+-- weekly reset; an entry without one goes last in its group. The bare default
+-- entry is left out when named accounts exist, because it is the active
+-- account read a second time.
+--
+-- Returns { entry, label, active, usable, limited, extraUsage } rows, where
+-- `extraUsage` says a limited account can still run on extra usage.
+function M.profiles(report, activeLabel)
+    local all = M.entries(report)
+    local named = false
+    for _, entry in ipairs(all) do
+        if M.profileLabel(entry) ~= nil then named = true; break end
+    end
+    local rows = {}
+    for _, entry in ipairs(all) do
+        if not (named and tostring(entry.id) == CLAUDE) then
+            local label = M.profileLabel(entry)
+            local weekly = M.windowGauge(entry, "weekly").metric
+            rows[#rows + 1] = {
+                entry = entry,
+                label = label,
+                active = label ~= nil and label == activeLabel,
+                usable = M.hasUsageLeft(entry),
+                limited = M.atLimit(entry),
+                extraUsage = M.extraUsageLeft(entry),
+                reset = M.parseIso(weekly and weekly.reset_at),
+            }
+        end
+    end
+    local function group(row) return row.active and 0 or row.usable and 1 or 2 end
+    table.sort(rows, function(a, b)
+        if group(a) ~= group(b) then return group(a) < group(b) end
+        if a.reset ~= b.reset then
+            if a.reset == nil then return false end
+            if b.reset == nil then return true end
+            return a.reset < b.reset
+        end
+        return tostring(a.entry.id) < tostring(b.entry.id)
+    end)
+    for _, row in ipairs(rows) do row.reset = nil end
     return rows
 end
 

@@ -1,7 +1,8 @@
 --!nonstrict
--- Headless poller: the single owner of `ai-usagebar usage --json`. One call
--- returns every configured vendor, so the capsules and the panel are subscribers
--- of noctalia.state and never spawn a process of their own.
+-- Headless poller: the single owner of `ai-usagebar usage --json` and
+-- `ai-usagebar account status --json`. One usage call returns every configured
+-- vendor, so the capsules and the panel are subscribers of noctalia.state and
+-- never spawn a process of their own. Account switches run here too.
 
 -- `ai-usagebar` is a declared dependency, so it is expected on PATH.
 local COMMAND = "ai-usagebar usage --json"
@@ -282,7 +283,59 @@ local function keepAntigravityReading(report)
     end
 end
 
-local function refresh()
+-- The active Claude account, re-read on every poll because `claude /login` or
+-- a switch from a terminal changes it without telling the shell. Only the label
+-- reaches state: the status document also carries e-mail addresses.
+-- "" means no account is active or the CLI cannot say.
+local statusInFlight = false
+
+local function readActiveAccount(onDone)
+    if statusInFlight then return end
+    statusInFlight = true
+    local started = noctalia.runAsync({ "ai-usagebar", "account", "status", "--json" }, function(result)
+        statusInFlight = false
+        local decoded
+        if result ~= nil and not result.timedOut and result.exitCode == 0 then
+            decoded = decodeDocument(result.stdout or "")
+        end
+        local cli = type(decoded) == "table" and type(decoded.cli) == "table" and decoded.cli or nil
+        local label = cli ~= nil and cli.active_label or nil
+        noctalia.state.set("active_account", shared.isProfileLabel(label) and label or "")
+        if onDone ~= nil then onDone() end
+    end, 10000)
+    if not started then
+        statusInFlight = false
+        noctalia.state.set("active_account", "")
+    end
+end
+
+local refresh
+
+-- Makes `label` the `claude` CLI's login, then reads the status and usage again
+-- so the bar and the panel follow at once. Claude only: Codex accounts are
+-- switched from a terminal.
+local function switchAccount(label)
+    if not shared.isProfileLabel(label) or noctalia.state.get("switching") ~= nil then return end
+    noctalia.state.set("switching", label)
+    noctalia.state.set("switch_error", nil)
+    local started = noctalia.runAsync({ "ai-usagebar", "account", "switch", label, "--cli" }, function(result)
+        noctalia.state.set("switching", nil)
+        if result == nil or result.timedOut or result.exitCode ~= 0 then
+            noctalia.state.set("switch_error", {
+                label = label,
+                detail = safeText(noctalia.string.trim(tostring(result and result.stderr or ""))):sub(1, 240),
+            })
+        end
+        refresh()
+    end, 30000)
+    if not started then
+        noctalia.state.set("switching", nil)
+        noctalia.state.set("switch_error", { label = label, detail = "" })
+    end
+end
+
+function refresh()
+    readActiveAccount()
     if inFlight then
         queueRefresh()
         return
@@ -351,6 +404,7 @@ noctalia.state.watch("command", function(value)
     if type(value) == "table" and value.action == "refresh" then refresh() end
     if type(value) == "table" and value.action == "catalog" then loadCatalog() end
     if type(value) == "table" and value.action == "diagnostics" then loadCatalog(); refresh() end
+    if type(value) == "table" and value.action == "switch" then switchAccount(value.label) end
 end)
 
 function update()
@@ -372,6 +426,10 @@ function onIpc(event, payload)
     -- `select <provider-id>` points the panel at one provider from a script.
     if event == "select" and type(payload) == "string" and payload ~= "" then
         noctalia.state.set("selected", payload)
+    end
+    -- `switch <label>` makes that account the `claude` CLI's login.
+    if event == "switch" and type(payload) == "string" then
+        switchAccount(noctalia.string.trim(payload))
     end
 end
 

@@ -1,49 +1,5 @@
 {
   "settings": {
-    "account": {
-      "description": "Etichetta facoltativa di un account con nome di ai-usagebar. Vuota per l'account predefinito. Ignorata quando il provider è Automatico.",
-      "label": "Etichetta dell'account"
-    },
-    "auto_providers": {
-      "description": "ID dei provider o provider@account. Vuoto li include tutti. Solo con Automatico.",
-      "label": "Filtro automatico"
-    },
-    "color_by_usage": {
-      "description": "Colora la lettura quando la quota si avvicina al limite. Disattivato, la capsula resta del colore della barra.",
-      "label": "Colore in base all'uso"
-    },
-    "extras": {
-      "description": "Il tempo rimasto nella finestra, quanto il consumo è avanti o indietro rispetto al tempo, entrambi o nessuno.",
-      "label": "Lettura aggiuntiva",
-      "option": {
-        "both": "Entrambi",
-        "countdown": "Tempo al rinnovo",
-        "none": "Nessuno",
-        "pace": "Ritmo rispetto al tempo"
-      }
-    },
-    "glyph_position": {
-      "description": "Da quale lato della lettura sta l'icona.",
-      "label": "Posizione dell'icona",
-      "option": {
-        "after": "Dopo",
-        "before": "Prima"
-      }
-    },
-    "provider_limit": {
-      "description": "Quanti provider mostra una capsula, dal più usato, con +N per gli altri. Vale solo quando il provider è Automatico.",
-      "label": "Provider nella capsula"
-    },
-    "quota_window": {
-      "description": "Le finestre esaurite hanno la precedenza. Nessuna percentuale se non disponibile.",
-      "label": "Finestra della quota",
-      "option": {
-        "auto": "Automatica",
-        "monthly": "Mensile",
-        "session": "Sessione",
-        "weekly": "Settimanale"
-      }
-    },
     "refresh_minutes": {
       "description": "Ogni quanto si chiede alla CLI l'uso aggiornato. I conti alla rovescia avanzano in locale tra una chiamata e l'altra.",
       "label": "Intervallo di aggiornamento (minuti)"
@@ -51,14 +7,6 @@
     "show_glyph": {
       "description": "L'icona del provider. Disattivata, resta solo la lettura.",
       "label": "Mostra l'icona"
-    },
-    "show_name": {
-      "description": "Aggiunge il nome del prodotto accanto alla percentuale, così due capsule non si confondono.",
-      "label": "Mostra il nome del provider"
-    },
-    "show_value": {
-      "description": "La percentuale come testo. Disattivata, la indica solo l'indicatore.",
-      "label": "Mostra il valore"
     },
     "style": {
       "description": "Come appare questa capsula nella barra.",
@@ -76,51 +24,6 @@
       "option": {
         "remaining": "Rimanente",
         "used": "Usata"
-      }
-    },
-    "vendor": {
-      "description": "Quale piano segue questa capsula. Aggiungi il widget due volte per seguirne due.",
-      "label": "Provider",
-      "option": {
-        "anthropic": "Claude",
-        "anthropic_api": "Anthropic API",
-        "antigravity": "Antigravity",
-        "auto": "Automatico (principale)",
-        "cline": "Cline",
-        "commandcode": "Command Code",
-        "copilot": "GitHub Copilot",
-        "cursor": "Cursor",
-        "deepinfra": "DeepInfra",
-        "deepseek": "DeepSeek",
-        "devin": "Devin",
-        "grok": "Grok",
-        "grokbot": "Grok Bot",
-        "kilo": "Kilo",
-        "kimi": "Kimi",
-        "kiro": "Kiro",
-        "lyceum": "Lyceum",
-        "minimax": "MiniMax",
-        "modelstudio": "Model Studio",
-        "moonshot": "Moonshot",
-        "muse_code": "Muse Code",
-        "nous": "Nous Research",
-        "novita": "Novita",
-        "ollama": "Ollama Cloud",
-        "openai": "Codex",
-        "opencode_go": "OpenCode Go",
-        "openrouter": "OpenRouter",
-        "orcarouter": "OrcaRouter",
-        "supergrok": "SuperGrok",
-        "synthetic": "Synthetic",
-        "zai": "Z.AI"
-      }
-    },
-    "visualization": {
-      "description": "Un indicatore accanto alla lettura, o niente.",
-      "label": "Visualizzazione",
-      "option": {
-        "gauge": "Barra della quota",
-        "none": "Niente"
       }
     }
   },
@@ -157,16 +60,12 @@
       "timed_out": "ai-usagebar non ha risposto",
       "timed_out_hint": "La lettura ha richiesto troppo tempo. Un provider potrebbe rispondere lentamente."
     },
-    "hidden_label": "Non mostrati",
-    "hidden_value": "Altri {count}, clic per aprire il pannello",
     "install": "Pagina di installazione",
     "last_reading": "Ultima lettura, {minutes} min fa",
     "last_reading_now": "Ultima lettura, pochi istanti fa",
     "loading": "Caricamento…",
     "more_actions": "Altre azioni",
-    "no_matching_providers": "Nessun provider corrispondente",
     "no_usage": "Nessun uso segnalato",
-    "not_configured": "`{vendor}` non è configurato in ai-usagebar",
     "now": "ora",
     "open_dashboard": "Apri la dashboard",
     "plan_changed": "Il piano è cambiato; le letture fatte con il precedente sono state scartate.",
@@ -198,7 +97,6 @@
     "stale_hint": "mostra gli ultimi dati noti",
     "time_remaining": "{percent}% della finestra rimanente",
     "title": "Uso AI",
-    "tooltip_more": "Clic sul widget per i dettagli.",
     "unavailable": "Non disponibile",
     "updated": "Aggiornato",
     "updated_ago": "Aggiornato {minutes} min fa",
@@ -206,6 +104,19 @@
     "used": "Usata",
     "waiting": "In attesa dei dati sull'uso",
     "weekly": "Settimanale",
-    "window_unavailable": "Questa finestra non è segnalata"
+    "no_limit": "Nessun limite",
+    "account": "Account",
+    "tooltip_used": "{percent} usato",
+    "tooltip_left": "{percent} rimasto",
+    "tooltip_elapsed": "{percent}% trascorso",
+    "tooltip_resets": "Rinnovo {window}",
+    "tooltip_data": "Dati",
+    "active": "Attivo",
+    "switch": "Passa",
+    "switching": "Cambio in corso…",
+    "switch_tooltip": "Usa {label} come login della CLI di Claude",
+    "switch_limited": "{label} ha raggiunto il limite di utilizzo",
+    "switch_extra_usage": "{label} ha raggiunto il limite di utilizzo; passando a questo account si usa l'utilizzo extra",
+    "switch_failed": "Cambio non riuscito"
   }
 }
